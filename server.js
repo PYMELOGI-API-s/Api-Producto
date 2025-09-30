@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
+const { connectDB } = require('./src/config/database');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -50,9 +51,17 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(port, () => {
-  console.log(`🚀 Servidor ejecutándose en http://localhost:${port}`);
-  console.log(`📊 API de productos disponible en http://localhost:${port}/api/productos`);
-});
+const startServer = async () => {
+  await connectDB();
+  return app.listen(port, () => {
+      console.log(`🚀 Servidor ejecutándose en http://localhost:${port}`);
+      console.log(`📊 API de productos disponible en http://localhost:${port}/api/productos`);
+  });
+};
 
-module.exports = app;
+// Si no estamos en modo de prueba, iniciamos el servidor directamente
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = { app, startServer };

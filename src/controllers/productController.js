@@ -1,360 +1,386 @@
-// Simulación de base de datos en memoria (reemplazar con DB real)
-let products = [
-    {
-      id: 1,
-      nombre: "Laptop HP Pavilion",
-      descripcion: "Laptop para uso profesional con procesador Intel i7",
-      codigoBarras: "1234567890123",
-      precio: 899.99,
-      stock: 15,
-      categoria: "Electrónicos",
-      imagen: "https://example.com/laptop.jpg",
-      fechaCreacion: new Date().toISOString(),
-      fechaActualizacion: new Date().toISOString()
-    },
-    {
-      id: 2,
-      nombre: "Mouse Logitech MX",
-      descripcion: "Mouse inalámbrico ergonómico para oficina",
-      codigoBarras: "2345678901234",
-      precio: 79.99,
-      stock: 50,
-      categoria: "Accesorios",
-      imagen: "https://example.com/mouse.jpg",
-      fechaCreacion: new Date().toISOString(),
-      fechaActualizacion: new Date().toISOString()
-    },
-    {
-      id: 3,
-      nombre: "Teclado Mecánico",
-      descripcion: "Teclado mecánico RGB para gaming",
-      codigoBarras: "3456789012345",
-      precio: 129.99,
-      stock: 25,
-      categoria: "Gaming",
-      imagen: "https://example.com/teclado.jpg",
-      fechaCreacion: new Date().toISOString(),
-      fechaActualizacion: new Date().toISOString()
-    }
-  ];
-  
-  let nextId = 4;
-  
-  const productController = {
-    // Obtener todos los productos con filtros
-    getAllProducts: (req, res) => {
-      try {
-        let filteredProducts = [...products];
-        const { categoria, precio_min, precio_max, stock_min, search, page = 1, limit = 10 } = req.query;
-  
-        // Filtro por categoría
-        if (categoria) {
-          filteredProducts = filteredProducts.filter(p => 
-            p.categoria.toLowerCase().includes(categoria.toLowerCase())
-          );
-        }
-  
-        // Filtro por rango de precio
-        if (precio_min) {
-          filteredProducts = filteredProducts.filter(p => p.precio >= parseFloat(precio_min));
-        }
-        if (precio_max) {
-          filteredProducts = filteredProducts.filter(p => p.precio <= parseFloat(precio_max));
-        }
-  
-        // Filtro por stock mínimo
-        if (stock_min) {
-          filteredProducts = filteredProducts.filter(p => p.stock >= parseInt(stock_min));
-        }
-  
-        // Búsqueda por nombre o descripción
-        if (search) {
-          filteredProducts = filteredProducts.filter(p => 
-            p.nombre.toLowerCase().includes(search.toLowerCase()) ||
-            p.descripcion.toLowerCase().includes(search.toLowerCase())
-          );
-        }
-  
-        // Paginación
-        const startIndex = (page - 1) * limit;
-        const endIndex = startIndex + parseInt(limit);
-        const paginatedProducts = filteredProducts.slice(startIndex, endIndex);
-  
-        res.json({
-          success: true,
-          data: paginatedProducts,
-          pagination: {
-            currentPage: parseInt(page),
-            totalPages: Math.ceil(filteredProducts.length / limit),
-            totalItems: filteredProducts.length,
-            itemsPerPage: parseInt(limit)
-          },
-          filters: {
+const { getDB } = require('../config/database');
+const sql = require('mssql');
+
+const productController = {
+  // Obtener todos los productos con filtros
+  getAllProducts: async (req, res) => {
+    try {
+      const { categoria, precio_min, precio_max, stock_min, search, page = 1, limit = 10 } = req.query;
+      const pool = getDB();
+      const request = pool.request();
+      
+      let whereClauses = [];
+      
+      if (categoria) {
+        whereClauses.push("categoria LIKE @categoria");
+        request.input('categoria', sql.VarChar, `%${categoria}%`);
+      }
+      if (precio_min) {
+        whereClauses.push("precio >= @precio_min");
+        request.input('precio_min', sql.Float, parseFloat(precio_min));
+      }
+      if (precio_max) {
+        whereClauses.push("precio <= @precio_max");
+        request.input('precio_max', sql.Float, parseFloat(precio_max));
+      }
+      if (stock_min) {
+        whereClauses.push("stock >= @stock_min");
+        request.input('stock_min', sql.Int, parseInt(stock_min));
+      }
+      if (search) {
+        whereClauses.push("(nombre LIKE @search OR descripcion LIKE @search)");
+        request.input('search', sql.VarChar, `%${search}%`);
+      }
+
+      const whereCondition = whereClauses.length > 0 ? 'WHERE ' + whereClauses.join(' AND ') : '';
+
+      // Count total items for pagination
+      const countQuery = `SELECT COUNT(*) as total FROM Producto ${whereCondition}`;
+      const countResult = await request.query(countQuery);
+      const totalItems = countResult.recordset[0].total;
+
+      // Get paginated data using a more compatible method
+      const offset = (page - 1) * limit;
+      const dataQuery = `
+        WITH NumberedProducts AS (
+            SELECT *, ROW_NUMBER() OVER (ORDER BY id) AS row_num
+            FROM Producto
+            ${whereCondition}
+        )
+        SELECT *
+        FROM NumberedProducts
+        WHERE row_num > ${offset} AND row_num <= ${offset} + ${parseInt(limit)};
+      `;
+
+      const result = await request.query(dataQuery);
+
+      res.json({
+        success: true,
+        data: result.recordset,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages: Math.ceil(totalItems / limit),
+          totalItems: totalItems,
+          itemsPerPage: parseInt(limit)
+        },
+        filters: {
             categoria,
             precio_min,
             precio_max,
             stock_min,
             search
           }
-        });
-      } catch (error) {
-        res.status(500).json({
+      });
+    } catch (error) {
+      console.error("Error en getAllProducts:", error);
+      res.status(500).json({
+        success: false,
+        error: 'Error al obtener productos',
+        message: error.message
+      });
+    }
+  },
+
+  // Obtener producto por ID
+  getProductById: async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const pool = getDB();
+      const result = await pool.request()
+        .input('id', sql.Int, id)
+        .query('SELECT * FROM Producto WHERE id = @id');
+
+      if (result.recordset.length === 0) {
+        return res.status(404).json({
           success: false,
-          error: 'Error al obtener productos',
-          message: error.message
+          error: 'Producto no encontrado',
+          message: `No existe un producto con ID ${id}`
         });
       }
-    },
-  
-    // Obtener producto por ID
-    getProductById: (req, res) => {
-      try {
-        const id = parseInt(req.params.id);
-        const product = products.find(p => p.id === id);
-  
-        if (!product) {
-          return res.status(404).json({
-            success: false,
-            error: 'Producto no encontrado',
-            message: `No existe un producto con ID ${id}`
-          });
-        }
-  
-        res.json({
-          success: true,
-          data: product
-        });
-      } catch (error) {
-        res.status(500).json({
+
+      res.json({
+        success: true,
+        data: result.recordset[0]
+      });
+    } catch (error) {
+      console.error("Error en getProductById:", error);
+      res.status(500).json({
+        success: false,
+        error: 'Error al obtener producto',
+        message: error.message
+      });
+    }
+  },
+
+  // Obtener producto por código de barras
+  getProductByBarcode: async (req, res) => {
+    try {
+      const { codigoBarras } = req.params;
+      const pool = getDB();
+      const result = await pool.request()
+        .input('codigoBarras', sql.VarChar, codigoBarras)
+        .query('SELECT * FROM Producto WHERE codigoBarras = @codigoBarras');
+
+      if (result.recordset.length === 0) {
+        return res.status(404).json({
           success: false,
-          error: 'Error al obtener producto',
-          message: error.message
+          error: 'Producto no encontrado',
+          message: `No existe un producto con código de barras ${codigoBarras}`
         });
       }
-    },
-  
-    // Obtener producto por código de barras
-    getProductByBarcode: (req, res) => {
-      try {
-        const { codigoBarras } = req.params;
-        const product = products.find(p => p.codigoBarras === codigoBarras);
-  
-        if (!product) {
-          return res.status(404).json({
-            success: false,
-            error: 'Producto no encontrado',
-            message: `No existe un producto con código de barras ${codigoBarras}`
-          });
-        }
-  
-        res.json({
-          success: true,
-          data: product
-        });
-      } catch (error) {
-        res.status(500).json({
+
+      res.json({
+        success: true,
+        data: result.recordset[0]
+      });
+    } catch (error) {
+      console.error("Error en getProductByBarcode:", error);
+      res.status(500).json({
+        success: false,
+        error: 'Error al obtener producto',
+        message: error.message
+      });
+    }
+  },
+
+  // Crear nuevo producto
+  createProduct: async (req, res) => {
+    try {
+      const { nombre, descripcion, codigoBarras, precio, stock, categoria, imagen } = req.body;
+      const pool = getDB();
+
+      const existingProduct = await pool.request()
+        .input('codigoBarras', sql.VarChar, codigoBarras)
+        .query('SELECT * FROM Producto WHERE codigoBarras = @codigoBarras');
+
+      if (existingProduct.recordset.length > 0) {
+        return res.status(400).json({
           success: false,
-          error: 'Error al obtener producto',
-          message: error.message
+          error: 'Código de barras duplicado',
+          message: `Ya existe un producto con el código de barras ${codigoBarras}`
         });
       }
-    },
-  
-    // Crear nuevo producto
-    createProduct: (req, res) => {
-      try {
-        const { nombre, descripcion, codigoBarras, precio, stock, categoria, imagen } = req.body;
-  
-        // Verificar que el código de barras no exista
-        const existingProduct = products.find(p => p.codigoBarras === codigoBarras);
-        if (existingProduct) {
+
+      const result = await pool.request()
+        .input('nombre', sql.VarChar, nombre)
+        .input('descripcion', sql.VarChar, descripcion)
+        .input('codigoBarras', sql.VarChar, codigoBarras)
+        .input('precio', sql.Decimal(10, 2), precio)
+        .input('stock', sql.Int, stock)
+        .input('categoria', sql.VarChar, categoria)
+        .input('imagen', sql.VarChar, imagen)
+        .query('INSERT INTO Producto (nombre, descripcion, codigoBarras, precio, stock, categoria, imagen) OUTPUT INSERTED.* VALUES (@nombre, @descripcion, @codigoBarras, @precio, @stock, @categoria, @imagen)');
+
+      res.status(201).json({
+        success: true,
+        message: 'Producto creado exitosamente',
+        data: result.recordset[0]
+      });
+    } catch (error) {
+      console.error("Error en createProduct:", error);
+      res.status(500).json({
+        success: false,
+        error: 'Error al crear producto',
+        message: error.message
+      });
+    }
+  },
+
+  // Actualizar producto
+  updateProduct: async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { nombre, descripcion, codigoBarras, precio, stock, categoria, imagen } = req.body;
+      const pool = getDB();
+
+      if (codigoBarras) {
+        const existingProduct = await pool.request()
+            .input('codigoBarras', sql.VarChar, codigoBarras)
+            .input('id', sql.Int, id)
+            .query('SELECT * FROM Producto WHERE codigoBarras = @codigoBarras AND id != @id');
+        if (existingProduct.recordset.length > 0) {
           return res.status(400).json({
             success: false,
             error: 'Código de barras duplicado',
-            message: `Ya existe un producto con el código de barras ${codigoBarras}`
+            message: `Ya existe otro producto con el código de barras ${codigoBarras}`
           });
         }
-  
-        const newProduct = {
-          id: nextId++,
-          nombre: nombre.trim(),
-          descripcion: descripcion.trim(),
-          codigoBarras: codigoBarras.trim(),
-          precio: parseFloat(precio),
-          stock: parseInt(stock),
-          categoria: categoria.trim(),
-          imagen: imagen?.trim() || null,
-          fechaCreacion: new Date().toISOString(),
-          fechaActualizacion: new Date().toISOString()
-        };
-  
-        products.push(newProduct);
-  
-        res.status(201).json({
-          success: true,
-          message: 'Producto creado exitosamente',
-          data: newProduct
-        });
-      } catch (error) {
-        res.status(500).json({
-          success: false,
-          error: 'Error al crear producto',
-          message: error.message
-        });
       }
-    },
-  
-    // Actualizar producto
-    updateProduct: (req, res) => {
-      try {
-        const id = parseInt(req.params.id);
-        const productIndex = products.findIndex(p => p.id === id);
-  
-        if (productIndex === -1) {
+
+      const setClauses = [];
+      const request = pool.request();
+      request.input('id', sql.Int, id);
+
+      if(nombre) {
+        setClauses.push("nombre = @nombre");
+        request.input('nombre', sql.VarChar, nombre);
+      }
+      if(descripcion) {
+        setClauses.push("descripcion = @descripcion");
+        request.input('descripcion', sql.VarChar, descripcion);
+      }
+      if(codigoBarras) {
+        setClauses.push("codigoBarras = @codigoBarras");
+        request.input('codigoBarras', sql.VarChar, codigoBarras);
+      }
+      if(precio !== undefined) {
+        setClauses.push("precio = @precio");
+        request.input('precio', sql.Decimal(10, 2), precio);
+      }
+      if(stock !== undefined) {
+        setClauses.push("stock = @stock");
+        request.input('stock', sql.Int, stock);
+      }
+      if(categoria) {
+        setClauses.push("categoria = @categoria");
+        request.input('categoria', sql.VarChar, categoria);
+      }
+      if(imagen !== undefined) {
+        setClauses.push("imagen = @imagen");
+        request.input('imagen', sql.VarChar, imagen);
+      }
+
+      if (setClauses.length === 0) {
+        const result = await pool.request().input('id', sql.Int, id).query('SELECT * FROM Producto WHERE id = @id');
+        if (result.recordset.length === 0) {
           return res.status(404).json({
             success: false,
             error: 'Producto no encontrado',
             message: `No existe un producto con ID ${id}`
           });
         }
-  
-        const { nombre, descripcion, codigoBarras, precio, stock, categoria, imagen } = req.body;
-  
-        // Verificar código de barras único (si se está cambiando)
-        if (codigoBarras && codigoBarras !== products[productIndex].codigoBarras) {
-          const existingProduct = products.find(p => p.codigoBarras === codigoBarras && p.id !== id);
-          if (existingProduct) {
-            return res.status(400).json({
-              success: false,
-              error: 'Código de barras duplicado',
-              message: `Ya existe otro producto con el código de barras ${codigoBarras}`
-            });
-          }
-        }
-  
-        // Actualizar solo los campos proporcionados
-        const updatedProduct = {
-          ...products[productIndex],
-          ...(nombre && { nombre: nombre.trim() }),
-          ...(descripcion && { descripcion: descripcion.trim() }),
-          ...(codigoBarras && { codigoBarras: codigoBarras.trim() }),
-          ...(precio !== undefined && { precio: parseFloat(precio) }),
-          ...(stock !== undefined && { stock: parseInt(stock) }),
-          ...(categoria && { categoria: categoria.trim() }),
-          ...(imagen !== undefined && { imagen: imagen?.trim() || null }),
-          fechaActualizacion: new Date().toISOString()
-        };
-  
-        products[productIndex] = updatedProduct;
-  
-        res.json({
-          success: true,
-          message: 'Producto actualizado exitosamente',
-          data: updatedProduct
-        });
-      } catch (error) {
-        res.status(500).json({
-          success: false,
-          error: 'Error al actualizar producto',
-          message: error.message
+        return res.json({
+            success: true,
+            message: 'No se realizaron cambios en el producto.',
+            data: result.recordset[0]
         });
       }
-    },
-  
-    // Eliminar producto
-    deleteProduct: (req, res) => {
-      try {
-        const id = parseInt(req.params.id);
-        const productIndex = products.findIndex(p => p.id === id);
-  
-        if (productIndex === -1) {
-          return res.status(404).json({
-            success: false,
-            error: 'Producto no encontrado',
-            message: `No existe un producto con ID ${id}`
-          });
-        }
-  
-        const deletedProduct = products.splice(productIndex, 1)[0];
-  
-        res.json({
-          success: true,
-          message: 'Producto eliminado exitosamente',
-          data: deletedProduct
-        });
-      } catch (error) {
-        res.status(500).json({
+
+      let query = `UPDATE Producto SET ${setClauses.join(', ')} OUTPUT INSERTED.* WHERE id = @id`;
+
+      const result = await request.query(query);
+
+      if (result.rowsAffected[0] === 0) {
+        return res.status(404).json({
           success: false,
-          error: 'Error al eliminar producto',
-          message: error.message
+          error: 'Producto no encontrado',
+          message: `No existe un producto con ID ${id}`
         });
       }
-    },
-  
-    // Obtener categorías disponibles
-    getCategories: (req, res) => {
-      try {
-        const categories = [...new Set(products.map(p => p.categoria))];
-        const categoriesWithCount = categories.map(categoria => ({
-          nombre: categoria,
-          cantidad: products.filter(p => p.categoria === categoria).length
-        }));
-  
-        res.json({
-          success: true,
-          data: categoriesWithCount
-        });
-      } catch (error) {
-        res.status(500).json({
-          success: false,
-          error: 'Error al obtener categorías',
-          message: error.message
-        });
-      }
-    },
-  
-    // Obtener estadísticas de productos
-    getProductStats: (req, res) => {
-      try {
-        const totalProducts = products.length;
-        const totalStock = products.reduce((sum, p) => sum + p.stock, 0);
-        const averagePrice = products.length > 0 
-          ? products.reduce((sum, p) => sum + p.precio, 0) / products.length 
-          : 0;
-        const lowStockProducts = products.filter(p => p.stock < 10).length;
-        const categories = [...new Set(products.map(p => p.categoria))].length;
-  
-        const mostExpensive = products.reduce((max, p) => p.precio > max.precio ? p : max, products[0]);
-        const cheapest = products.reduce((min, p) => p.precio < min.precio ? p : min, products[0]);
-  
-        res.json({
-          success: true,
-          data: {
-            totalProducts,
-            totalStock,
-            averagePrice: Math.round(averagePrice * 100) / 100,
-            lowStockProducts,
-            totalCategories: categories,
-            mostExpensive: mostExpensive ? {
-              id: mostExpensive.id,
-              nombre: mostExpensive.nombre,
-              precio: mostExpensive.precio
-            } : null,
-            cheapest: cheapest ? {
-              id: cheapest.id,
-              nombre: cheapest.nombre,
-              precio: cheapest.precio
-            } : null
-          }
-        });
-      } catch (error) {
-        res.status(500).json({
-          success: false,
-          error: 'Error al obtener estadísticas',
-          message: error.message
-        });
-      }
+
+      res.json({
+        success: true,
+        message: 'Producto actualizado exitosamente',
+        data: result.recordset[0]
+      });
+    } catch (error) {
+      console.error("Error en updateProduct:", error);
+      res.status(500).json({
+        success: false,
+        error: 'Error al actualizar producto',
+        message: error.message
+      });
     }
-  };
+  },
+
+  // Eliminar producto
+  deleteProduct: async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const pool = getDB();
+      const result = await pool.request()
+        .input('id', sql.Int, id)
+        .query('DELETE FROM Producto OUTPUT DELETED.* WHERE id = @id');
+
+      if (result.rowsAffected[0] === 0) {
+        return res.status(404).json({
+          success: false,
+          error: 'Producto no encontrado',
+          message: `No existe un producto con ID ${id}`
+        });
+      }
+
+      res.json({
+        success: true,
+        message: 'Producto eliminado exitosamente',
+        data: result.recordset[0]
+      });
+    } catch (error) {
+      console.error("Error en deleteProduct:", error);
+      res.status(500).json({
+        success: false,
+        error: 'Error al eliminar producto',
+        message: error.message
+      });
+    }
+  },
   
-  module.exports = productController;
+  // Obtener categorías disponibles
+  getCategories: async (req, res) => {
+    try {
+        const pool = getDB();
+        const result = await pool.request()
+            .query('SELECT categoria as nombre, COUNT(*) as cantidad FROM Producto GROUP BY categoria');
+        
+        res.json({
+            success: true,
+            data: result.recordset
+        });
+    } catch (error) {
+        console.error("Error en getCategories:", error);
+        res.status(500).json({
+            success: false,
+            error: 'Error al obtener categorías',
+            message: error.message
+        });
+    }
+  },
+
+  // Obtener estadísticas de productos
+  getProductStats: async (req, res) => {
+    try {
+        const pool = getDB();
+        const statsQuery = `
+            SELECT
+                (SELECT COUNT(*) FROM Producto) as totalProducts,
+                (SELECT SUM(stock) FROM Producto) as totalStock,
+                (SELECT AVG(precio) FROM Producto) as averagePrice,
+                (SELECT COUNT(*) FROM Producto WHERE stock < 10) as lowStockProducts,
+                (SELECT COUNT(DISTINCT categoria) FROM Producto) as totalCategories;
+        `;
+        const mostExpensiveQuery = 'SELECT TOP 1 id, nombre, precio FROM Producto ORDER BY precio DESC';
+        const cheapestQuery = 'SELECT TOP 1 id, nombre, precio FROM Producto ORDER BY precio ASC';
+
+        const [statsResult, mostExpensiveResult, cheapestResult] = await Promise.all([
+            pool.request().query(statsQuery),
+            pool.request().query(mostExpensiveQuery),
+            pool.request().query(cheapestQuery)
+        ]);
+
+        const stats = statsResult.recordset[0];
+
+        res.json({
+            success: true,
+            data: {
+                totalProducts: stats.totalProducts,
+                totalStock: stats.totalStock,
+                averagePrice: Math.round(stats.averagePrice * 100) / 100,
+                lowStockProducts: stats.lowStockProducts,
+                totalCategories: stats.totalCategories,
+                mostExpensive: mostExpensiveResult.recordset[0] || null,
+                cheapest: cheapestResult.recordset[0] || null
+            }
+        });
+
+    } catch (error) {
+        console.error("Error en getProductStats:", error);
+        res.status(500).json({
+            success: false,
+            error: 'Error al obtener estadísticas',
+            message: error.message
+        });
+    }
+  }
+};
+
+module.exports = productController;
